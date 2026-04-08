@@ -1,0 +1,15 @@
+
+=== NEXT DAY LEADS ===
+
+Doctor: Dr. Sharma
+- Arijit at 10:00 AM
+- Rahul at 11:00 AM
+- Priya at 02:00 PM
+- Riya at 04:00 PM
+
+Doctor: Dr. Mehta
+- Sneha at 12:00 PM
+- Amit at 03:00 PM
+
+Doctor: Dr. Roy
+- Vikram at 05:00 PM
