@@ -629,4 +629,66 @@ public class ClinicService {
     public List<Lead> getLeads() {
         return new ArrayList<>(leads);
     }
+
+    public List<Clinic> getClinics() {
+        return new ArrayList<>(clinics);
+    }
+
+    public List<Doctor> getDoctors() {
+        return new ArrayList<>(doctors);
+    }
+
+    // === MONETIZATION HOOKS ===
+
+    /**
+     * Get the total number of leads (potential appointments) for a specific clinic
+     */
+    public int getLeadCountForClinic(int clinicId) {
+        return (int) leads.stream()
+            .filter(lead -> lead.clinicId == clinicId)
+            .count();
+    }
+
+    /**
+     * Get the total number of confirmed appointments for a specific doctor
+     */
+    public int getAppointmentCountForDoctor(int doctorId) {
+        return (int) leads.stream()
+            .filter(lead -> lead.doctor.id == doctorId && lead.state == BookingState.CONFIRMED)
+            .count();
+    }
+
+    /**
+     * Get the total number of confirmed appointments for a specific clinic
+     */
+    public int getAppointmentCountForClinic(int clinicId) {
+        return (int) leads.stream()
+            .filter(lead -> lead.clinicId == clinicId && lead.state == BookingState.CONFIRMED)
+            .count();
+    }
+
+    /**
+     * Get monthly usage statistics for billing
+     */
+    public Map<String, Integer> getMonthlyUsageStats(int clinicId, int year, int month) {
+        Map<String, Integer> stats = new HashMap<>();
+        LocalDate start = LocalDate.of(year, month, 1);
+        LocalDate end = start.plusMonths(1);
+
+        int leads = (int) this.leads.stream()
+            .filter(lead -> lead.clinicId == clinicId &&
+                    lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().isAfter(start.minusDays(1)) &&
+                    lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().isBefore(end))
+            .count();
+
+        int appointments = (int) this.leads.stream()
+            .filter(lead -> lead.clinicId == clinicId && lead.state == BookingState.CONFIRMED &&
+                    lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().isAfter(start.minusDays(1)) &&
+                    lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().isBefore(end))
+            .count();
+
+        stats.put("leads", leads);
+        stats.put("appointments", appointments);
+        return stats;
+    }
 }

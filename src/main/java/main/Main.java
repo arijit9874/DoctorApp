@@ -2,7 +2,9 @@ package main;
 
 import java.time.*;
 import java.util.List;
+import java.util.Map;
 import model.*;
+import service.BillingService;
 import service.ClinicService;
 
 public class Main {
@@ -184,6 +186,38 @@ public class Main {
             System.out.println("Job " + job.id + " [" + job.jobType + "] - Status: " + job.status +
                              (job.status == DispatchJob.DispatchStatus.FAILED ? " (Error: " + job.errorMessage + ")" : ""));
         }
+
+        // === MONETIZATION HOOKS DEMONSTRATION ===
+        System.out.println("\n=== Monetization Hooks ===");
+        BillingService billingService = new BillingService(service);
+
+        // Track leads per clinic
+        System.out.println("Leads per clinic:");
+        for (Clinic clinic : service.getClinics()) {
+            int leadCount = service.getLeadCountForClinic(clinic.id);
+            System.out.println("  " + clinic.name + ": " + leadCount + " leads");
+        }
+
+        // Track appointments per doctor
+        System.out.println("\nAppointments per doctor:");
+        for (Doctor doctor : service.getDoctors()) {
+            int appointmentCount = service.getAppointmentCountForDoctor(doctor.id);
+            System.out.println("  " + doctor.name + ": " + appointmentCount + " appointments");
+        }
+
+        // Billing demonstration
+        System.out.println("\nBilling for Apollo Clinic (ID: " + c1.id + "):");
+        Map<String, Double> breakdown = billingService.getBillingBreakdown(c1.id, 2026, 4);
+        System.out.println("  Base Fee: $" + breakdown.get("baseFee"));
+        System.out.println("  Lead Fee: $" + breakdown.get("leadFee"));
+        System.out.println("  Appointment Fee: $" + breakdown.get("appointmentFee"));
+        System.out.println("  Total: $" + breakdown.get("total"));
+
+        Map<String, Object> summary = billingService.getUsageSummary(c1.id);
+        System.out.println("Usage Summary:");
+        System.out.println("  Total Leads: " + summary.get("totalLeads"));
+        System.out.println("  Total Appointments: " + summary.get("totalAppointments"));
+        System.out.println("  Within Free Tier: " + summary.get("withinFreeTier"));
 
         // Shutdown the dispatch queue
         service.shutdownDispatchQueue();
