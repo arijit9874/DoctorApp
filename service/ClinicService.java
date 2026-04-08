@@ -1,18 +1,47 @@
 package service;
 
+import java.time.*;
 import java.util.*;
 import java.util.regex.Pattern;
 import model.*;
-
 public class ClinicService {
 
     private List<Clinic> clinics = new ArrayList<>();
     private List<Doctor> doctors = new ArrayList<>();
     private List<Lead> leads = new ArrayList<>();
+    private List<DoctorAvailability> availabilities = new ArrayList<>();
+    private List<Holiday> holidays = new ArrayList<>();
+    private List<EmergencyBlock> emergencyBlocks = new ArrayList<>();
+    private DispatchQueue dispatchQueue;
 
     private int clinicIdCounter = 1;
     private int doctorIdCounter = 1;
+    private int availabilityIdCounter = 1;
+    private int holidayIdCounter = 1;
+    private int emergencyBlockIdCounter = 1;
+    private int dispatchJobIdCounter = 1;
     private Map<Integer, Integer> lastAssignedDoctorIndex = new HashMap<>();
+
+    public void initializeDispatchQueue() {
+        this.dispatchQueue = new DispatchQueue();
+    }
+
+    public void shutdownDispatchQueue() {
+        if (dispatchQueue != null) {
+            dispatchQueue.shutdown();
+        }
+    }
+
+    private void dispatchJob(String jobType, String payload) {
+        if (dispatchQueue != null) {
+            DispatchJob job = new DispatchJob(dispatchJobIdCounter++, jobType, payload);
+            dispatchQueue.enqueueJob(job);
+        }
+    }
+
+    public List<DispatchJob> getProcessedDispatchJobs() {
+        return dispatchQueue != null ? dispatchQueue.getProcessedJobs() : new ArrayList<>();
+    }
 
     public Clinic addClinic(String name) {
         Clinic clinic = new Clinic(clinicIdCounter++, name);
@@ -52,6 +81,80 @@ public class ClinicService {
         }
     }
 
+    // New availability management methods
+    public DoctorAvailability addDoctorAvailability(int doctorId, DayOfWeek dayOfWeek,
+                                                  LocalTime startTime, LocalTime endTime,
+                                                  int slotDurationMinutes) {
+        DoctorAvailability availability = new DoctorAvailability(
+            availabilityIdCounter++, doctorId, dayOfWeek, startTime, endTime, slotDurationMinutes);
+        availabilities.add(availability);
+        return availability;
+    }
+
+    public void addBreakToAvailability(int availabilityId, LocalTime breakStart, LocalTime breakEnd) {
+        for (DoctorAvailability avail : availabilities) {
+            if (avail.id == availabilityId) {
+                avail.addBreak(breakStart, breakEnd);
+                break;
+            }
+        }
+    }
+
+    public Holiday addHoliday(int doctorId, LocalDate date, String reason) {
+        Holiday holiday = new Holiday(holidayIdCounter++, doctorId, date, reason);
+        holidays.add(holiday);
+        return holiday;
+    }
+
+    public EmergencyBlock addEmergencyBlock(int doctorId, LocalDateTime startDateTime,
+                                          LocalDateTime endDateTime, String reason) {
+        EmergencyBlock block = new EmergencyBlock(emergencyBlockIdCounter++, doctorId,
+                                                startDateTime, endDateTime, reason);
+        emergencyBlocks.add(block);
+        return block;
+    }
+
+    public List<LocalTime> getAvailableSlots(int doctorId, LocalDate date) {
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+
+        // Check if it's a holiday
+        boolean isHoliday = holidays.stream()
+            .anyMatch(h -> (h.doctorId == doctorId || h.doctorId == -1) && h.date.equals(date));
+
+        if (isHoliday) {
+            return new ArrayList<>();
+        }
+
+        // Find availability for this day
+        DoctorAvailability availability = availabilities.stream()
+            .filter(a -> a.doctorId == doctorId && a.dayOfWeek == dayOfWeek)
+            .findFirst()
+            .orElse(null);
+
+        if (availability == null) {
+            return new ArrayList<>();
+        }
+
+        List<LocalTime> slots = availability.generateAvailableSlots();
+
+        // Filter out slots that overlap with emergency blocks
+        LocalDateTime dateStart = date.atStartOfDay();
+        LocalDateTime dateEnd = date.atTime(LocalTime.MAX);
+
+        List<EmergencyBlock> relevantBlocks = emergencyBlocks.stream()
+            .filter(b -> (b.doctorId == doctorId || b.doctorId == -1) &&
+                        b.overlapsWith(dateStart, dateEnd))
+            .toList();
+
+        return slots.stream()
+            .filter(slot -> {
+                LocalDateTime slotDateTime = date.atTime(slot);
+                return relevantBlocks.stream()
+                    .noneMatch(block -> block.overlapsWith(slotDateTime, slotDateTime.plusMinutes(availability.slotDurationMinutes)));
+            })
+            .toList();
+    }
+
     public List<Doctor> getDoctorsForClinic(int clinicId) {
         for (Clinic c : clinics) {
             if (c.id == clinicId) {
@@ -72,10 +175,17 @@ public class ClinicService {
     }
 
     public boolean confirmBooking(int doctorId, String timeSlot, String patientName) {
+        LocalDate bookingDate = LocalDate.now().plusDays(2);
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctorId && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
+            if (lead.doctor.id == doctorId && lead.date.equals(bookingDate) && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
                 if (lead.state == BookingState.PENDING) {
                     lead.state = BookingState.CONFIRMED;
+
+                    // Dispatch confirmation job
+                    String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
+                        patientName, lead.doctor.name, lead.date, timeSlot);
+                    dispatchJob("APPOINTMENT_CONFIRMED", payload);
+
                     return true;
                 }
             }
@@ -84,10 +194,17 @@ public class ClinicService {
     }
 
     public boolean cancelBooking(int doctorId, String timeSlot, String patientName) {
+        LocalDate bookingDate = LocalDate.now().plusDays(2);
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctorId && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
+            if (lead.doctor.id == doctorId && lead.date.equals(bookingDate) && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
                 if (lead.state == BookingState.PENDING || lead.state == BookingState.CONFIRMED) {
                     lead.state = BookingState.CANCELLED;
+
+                    // Dispatch cancellation job
+                    String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
+                        patientName, lead.doctor.name, lead.date, timeSlot);
+                    dispatchJob("APPOINTMENT_CANCELLED", payload);
+
                     return true;
                 }
             }
@@ -96,10 +213,17 @@ public class ClinicService {
     }
 
     public boolean markNoShow(int doctorId, String timeSlot, String patientName) {
+        LocalDate bookingDate = LocalDate.now().plusDays(2);
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctorId && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
+            if (lead.doctor.id == doctorId && lead.date.equals(bookingDate) && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
                 if (lead.state == BookingState.CONFIRMED) {
                     lead.state = BookingState.NO_SHOW;
+
+                    // Dispatch no-show notification job
+                    String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
+                        patientName, lead.doctor.name, lead.date, timeSlot);
+                    dispatchJob("APPOINTMENT_NO_SHOW", payload);
+
                     return true;
                 }
             }
@@ -108,6 +232,7 @@ public class ClinicService {
     }
 
     public void bookAppointment(String patientName, int doctorId, String timeSlot) {
+        System.out.println("DEBUG: Booking attempt for doctorId=" + doctorId + ", timeSlot=" + timeSlot);
         Doctor selectedDoctor = null;
 
         for (Doctor d : doctors) {
@@ -122,13 +247,20 @@ public class ClinicService {
             return;
         }
 
+        System.out.println("DEBUG: Booking for doctor " + selectedDoctor.name + " (id=" + selectedDoctor.id + "), available=" + selectedDoctor.isAvailable);
+
         if (!selectedDoctor.isAvailable) {
             System.out.println("Doctor is not available!");
             return;
         }
 
-        if (!selectedDoctor.isTimeWithinWorkingHours(timeSlot)) {
-            System.out.println("Time slot is outside doctor's working hours!");
+        LocalDate bookingDate = LocalDate.now().plusDays(2); // Assume day after tomorrow booking
+
+        List<LocalTime> availableSlots = getAvailableSlots(selectedDoctor.id, bookingDate);
+        System.out.println("DEBUG: Available slots for doctor " + selectedDoctor.id + " on " + bookingDate + ": " + availableSlots);
+
+        if (!isTimeSlotAvailable(selectedDoctor, bookingDate, timeSlot)) {
+            System.out.println("Time slot already booked or not available for this doctor!");
             return;
         }
 
@@ -137,12 +269,12 @@ public class ClinicService {
             return;
         }
 
-        if (!isTimeSlotAvailable(selectedDoctor, timeSlot)) {
-            System.out.println("Time slot already booked for this doctor!");
-            return;
-        }
+        leads.add(new Lead(patientName, selectedDoctor, bookingDate, timeSlot, selectedDoctor.clinicId));
 
-        leads.add(new Lead(patientName, selectedDoctor, timeSlot, selectedDoctor.clinicId));
+        // Dispatch notification job
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
+            patientName, selectedDoctor.name, bookingDate, timeSlot);
+        dispatchJob("APPOINTMENT_BOOKED", payload);
     }
 
     public void bookAppointmentRoundRobin(String patientName, int clinicId, String timeSlot) {
@@ -170,6 +302,8 @@ public class ClinicService {
             return;
         }
 
+        LocalDate bookingDate = LocalDate.now().plusDays(2); // Assume day after tomorrow booking
+
         int lastIndex = lastAssignedDoctorIndex.getOrDefault(clinicId, -1);
         Doctor assignedDoctor = null;
         int checked = 0;
@@ -177,7 +311,7 @@ public class ClinicService {
         while (checked < selectedClinic.doctors.size()) {
             currentIndex = (currentIndex + 1) % selectedClinic.doctors.size();
             Doctor candidate = selectedClinic.doctors.get(currentIndex);
-            if (candidate.isAvailable && candidate.isTimeWithinWorkingHours(timeSlot)) {
+            if (candidate.isAvailable && isTimeSlotAvailable(candidate, bookingDate, timeSlot)) {
                 assignedDoctor = candidate;
                 break;
             }
@@ -191,13 +325,12 @@ public class ClinicService {
 
         lastAssignedDoctorIndex.put(clinicId, selectedClinic.doctors.indexOf(assignedDoctor));
 
-        // Check availability for the assigned doctor
-        if (!isTimeSlotAvailable(assignedDoctor, timeSlot)) {
-            System.out.println("Time slot already booked for the assigned doctor!");
-            return;
-        }
+        leads.add(new Lead(patientName, assignedDoctor, bookingDate, timeSlot, clinicId));
 
-        leads.add(new Lead(patientName, assignedDoctor, timeSlot, clinicId));
+        // Dispatch notification job
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\",\"clinic\":\"%s\"}",
+            patientName, assignedDoctor.name, bookingDate, timeSlot, selectedClinic.name);
+        dispatchJob("APPOINTMENT_BOOKED", payload);
     }
 
     public void bookAppointmentAuto(String patientName, String timeSlot) {
@@ -205,6 +338,8 @@ public class ClinicService {
             System.out.println("Invalid time slot! Please use HH:MM AM/PM format between 9:00 AM and 5:00 PM.");
             return;
         }
+
+        LocalDate bookingDate = LocalDate.now().plusDays(2); // Assume day after tomorrow booking
 
         // Global round robin across all doctors
         int lastGlobalIndex = lastAssignedDoctorIndex.getOrDefault(0, -1); // Use 0 as global key
@@ -214,7 +349,7 @@ public class ClinicService {
         while (checked < doctors.size()) {
             currentIndex = (currentIndex + 1) % doctors.size();
             Doctor candidate = doctors.get(currentIndex);
-            if (candidate.isAvailable && candidate.isTimeWithinWorkingHours(timeSlot) && isTimeSlotAvailable(candidate, timeSlot)) {
+            if (candidate.isAvailable && isTimeSlotAvailable(candidate, bookingDate, timeSlot)) {
                 assignedDoctor = candidate;
                 break;
             }
@@ -228,7 +363,12 @@ public class ClinicService {
 
         lastAssignedDoctorIndex.put(0, doctors.indexOf(assignedDoctor));
 
-        leads.add(new Lead(patientName, assignedDoctor, timeSlot, assignedDoctor.clinicId));
+        leads.add(new Lead(patientName, assignedDoctor, bookingDate, timeSlot, assignedDoctor.clinicId));
+
+        // Dispatch notification job
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
+            patientName, assignedDoctor.name, bookingDate, timeSlot);
+        dispatchJob("APPOINTMENT_BOOKED", payload);
     }
 
     private boolean isValidTimeSlot(String timeSlot) {
@@ -249,13 +389,37 @@ public class ClinicService {
         return hour >= 9 && hour <= 17; // 9 AM to 5 PM
     }
 
-    private boolean isTimeSlotAvailable(Doctor doctor, String timeSlot) {
+    private boolean isTimeSlotAvailable(Doctor doctor, LocalDate date, String timeSlot) {
+        // Check if slot is already booked
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctor.id && lead.timeSlot.equals(timeSlot) && lead.state == BookingState.CONFIRMED) {
+            if (lead.doctor.id == doctor.id && lead.date.equals(date) && lead.timeSlot.equals(timeSlot) && lead.state == BookingState.CONFIRMED) {
                 return false;
             }
         }
-        return true;
+
+        // Check if slot is within doctor's available slots for the date
+        List<LocalTime> availableSlots = getAvailableSlots(doctor.id, date);
+        LocalTime slotTime = parseTimeSlot(timeSlot);
+        return availableSlots.contains(slotTime);
+    }
+
+    private LocalTime parseTimeSlot(String timeSlot) {
+        try {
+            // Parse "HH:MM AM/PM" to LocalTime
+            String[] parts = timeSlot.split(" ");
+            if (parts.length != 2) return null;
+            String time = parts[0];
+            String ampm = parts[1];
+            String[] hm = time.split(":");
+            if (hm.length != 2) return null;
+            int hour = Integer.parseInt(hm[0]);
+            int minute = Integer.parseInt(hm[1]);
+            if (ampm.equals("PM") && hour != 12) hour += 12;
+            if (ampm.equals("AM") && hour == 12) hour = 0;
+            return LocalTime.of(hour, minute);
+        } catch (Exception e) {
+            return null; // Invalid time slot
+        }
     }
 
     public void showLeadsForClinic(int clinicId) {
@@ -298,7 +462,7 @@ public class ClinicService {
             if (docLeads != null) {
                 System.out.println("\nDoctor: " + d.name);
                 for (Lead l : docLeads) {
-                    System.out.println("- " + l.patientName + " at " + l.timeSlot + " [" + l.state + "]");
+                    System.out.println("- " + l.patientName + " on " + l.date + " at " + l.timeSlot + " [" + l.state + "]");
                 }
             }
         }
@@ -332,7 +496,7 @@ public class ClinicService {
                     if (docLeads != null) {
                         System.out.println("  Doctor: " + d.name);
                         for (Lead l : docLeads) {
-                            System.out.println("- " + l.patientName + " at " + l.timeSlot + " [" + l.state + "]");
+                            System.out.println("- " + l.patientName + " on " + l.date + " at " + l.timeSlot + " [" + l.state + "]");
                         }
                     }
                 }

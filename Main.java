@@ -1,11 +1,16 @@
 import model.*;
 import service.ClinicService;
+import model.*;
+import service.ClinicService;
 
 public class Main {
 
     public static void main(String[] args) {
 
         ClinicService service = new ClinicService();
+
+        // Initialize dispatch queue
+        service.initializeDispatchQueue();
 
         // === SETUP CLINICS AND DOCTORS ===
         System.out.println("=== Setting up Clinics and Doctors ===");
@@ -16,12 +21,57 @@ public class Main {
         Doctor d2 = service.addDoctor("Dr. Mehta", c1.id);
         Doctor d3 = service.addDoctor("Dr. Roy", c2.id);
 
-        // === CONFIGURE AVAILABILITY AND WORKING HOURS ===
+        // === CONFIGURE DOCTOR AVAILABILITIES ===
+        System.out.println("\n=== Configuring Doctor Availabilities ===");
+
+        // Dr. Sharma: Monday to Friday, 9 AM - 5 PM, 30 min slots
+        for (DayOfWeek day : new DayOfWeek[]{DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY}) {
+            DoctorAvailability avail = service.addDoctorAvailability(d1.id, day, LocalTime.of(9, 0), LocalTime.of(17, 0), 30);
+            // Add lunch break 12:00 PM - 1:00 PM
+            service.addBreakToAvailability(avail.id, LocalTime.of(12, 0), LocalTime.of(13, 0));
+        }
+
+        // Dr. Mehta: Tuesday, Thursday, Saturday, 10 AM - 4 PM, 45 min slots
+        for (DayOfWeek day : new DayOfWeek[]{DayOfWeek.TUESDAY, DayOfWeek.THURSDAY, DayOfWeek.SATURDAY}) {
+            service.addDoctorAvailability(d2.id, day, LocalTime.of(10, 0), LocalTime.of(16, 0), 45);
+        }
+
+        // Dr. Roy: Monday, Wednesday, Friday, 10 AM - 4 PM, 30 min slots
+        for (DayOfWeek day : new DayOfWeek[]{DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.FRIDAY}) {
+            service.addDoctorAvailability(d3.id, day, LocalTime.of(10, 0), LocalTime.of(16, 0), 30);
+        }
+
+        // === CONFIGURE HOLIDAYS AND EMERGENCY BLOCKS ===
+        System.out.println("\n=== Configuring Holidays and Emergency Blocks ===");
+
+        LocalDate tomorrow = LocalDate.now().plusDays(1);
+        LocalDate dayAfter = LocalDate.now().plusDays(2);
+
+        // Clinic holiday for tomorrow
+        service.addHoliday(-1, tomorrow, "Clinic Maintenance");
+
+        // Emergency block for Dr. Sharma tomorrow afternoon
+        service.addEmergencyBlock(d1.id, tomorrow.atTime(14, 0), tomorrow.atTime(16, 0), "Emergency Meeting");
+
+        // === CONFIGURE AVAILABILITY AND WORKING HOURS (LEGACY) ===
         System.out.println("\n=== Configuring Doctor Availability ===");
         service.setDoctorAvailability(d2.id, false); // Dr. Mehta is unavailable
         service.setDoctorWorkingHours(d3.id, "10:00", "16:00"); // Dr. Roy works 10 AM to 4 PM
         System.out.println("Dr. Mehta set to unavailable");
         System.out.println("Dr. Roy working hours: 10:00 AM - 4:00 PM");
+
+        // === DISPLAY AVAILABLE SLOTS FOR DAY AFTER TOMORROW ===
+        System.out.println("\n=== Available Slots for Day After Tomorrow (" + dayAfter + " - " + dayAfter.getDayOfWeek() + ") ===");
+        System.out.println("Dr. Sharma available slots:");
+        service.getAvailableSlots(d1.id, dayAfter).forEach(slot ->
+            System.out.print(slot + " "));
+        System.out.println("\nDr. Mehta available slots:");
+        service.getAvailableSlots(d2.id, dayAfter).forEach(slot ->
+            System.out.print(slot + " "));
+        System.out.println("\nDr. Roy available slots:");
+        service.getAvailableSlots(d3.id, dayAfter).forEach(slot ->
+            System.out.print(slot + " "));
+        System.out.println();
 
         // === SUCCESSFUL BOOKINGS ===
         System.out.println("\n=== Testing Successful Bookings ===");
@@ -114,5 +164,26 @@ public class Main {
         service.bookAppointment("Test14", d1.id, "02:00 PM"); // Should succeed - slot freed by CANCELLED booking
 
         service.showLeads();
+
+        // === DISPATCH JOB SYSTEM DEMONSTRATION ===
+        System.out.println("\n=== Dispatch Job System Status ===");
+
+        // Wait a bit for async jobs to process
+        try {
+            Thread.sleep(3000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        List<DispatchJob> processedJobs = service.getProcessedDispatchJobs();
+        System.out.println("Total processed jobs: " + processedJobs.size());
+
+        for (DispatchJob job : processedJobs) {
+            System.out.println("Job " + job.id + " [" + job.jobType + "] - Status: " + job.status +
+                             (job.status == DispatchJob.DispatchStatus.FAILED ? " (Error: " + job.errorMessage + ")" : ""));
+        }
+
+        // Shutdown the dispatch queue
+        service.shutdownDispatchQueue();
     }
 }
