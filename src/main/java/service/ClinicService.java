@@ -8,6 +8,7 @@ public class ClinicService {
 
     private List<Clinic> clinics = new ArrayList<>();
     private List<Doctor> doctors = new ArrayList<>();
+    private List<Patient> patients = new ArrayList<>();
     private List<Lead> leads = new ArrayList<>();
     private List<DoctorAvailability> availabilities = new ArrayList<>();
     private List<Holiday> holidays = new ArrayList<>();
@@ -16,6 +17,8 @@ public class ClinicService {
 
     private int clinicIdCounter = 1;
     private int doctorIdCounter = 1;
+    private int patientIdCounter = 1;
+    private int leadIdCounter = 1;
     private int availabilityIdCounter = 1;
     private int holidayIdCounter = 1;
     private int emergencyBlockIdCounter = 1;
@@ -62,6 +65,18 @@ public class ClinicService {
         return doctor;
     }
 
+    public Patient findOrCreatePatient(String name, String phoneNumber) {
+        for (Patient p : patients) {
+            if (p.phoneNumber.equals(phoneNumber)) {
+                p.name = name; // keep latest name
+                return p;
+            }
+        }
+        Patient patient = new Patient(patientIdCounter++, name, phoneNumber);
+        patients.add(patient);
+        return patient;
+    }
+
     public void setDoctorAvailability(int doctorId, boolean available) {
         for (Doctor d : doctors) {
             if (d.id == doctorId) {
@@ -98,6 +113,35 @@ public class ClinicService {
                 break;
             }
         }
+    }
+
+    private Instant toUtcInstant(LocalDate date, String timeSlot, ZoneId zone) {
+        try {
+            String[] parts = timeSlot.split(" ");
+            if (parts.length != 2) return null;
+            String time = parts[0];
+            String ampm = parts[1];
+            String[] hm = time.split(":");
+            if (hm.length != 2) return null;
+            int hour = Integer.parseInt(hm[0]);
+            int minute = Integer.parseInt(hm[1]);
+            if (ampm.equals("PM") && hour != 12) hour += 12;
+            if (ampm.equals("AM") && hour == 12) hour = 0;
+            LocalTime localTime = LocalTime.of(hour, minute);
+            return date.atTime(localTime).atZone(zone).toInstant();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String toTimeSlot(Instant instant) {
+        LocalTime time = instant.atZone(ZoneId.systemDefault()).toLocalTime();
+        int hour = time.getHour();
+        int minute = time.getMinute();
+        String ampm = hour >= 12 ? "PM" : "AM";
+        if (hour > 12) hour -= 12;
+        if (hour == 0) hour = 12;
+        return String.format("%d:%02d %s", hour, minute, ampm);
     }
 
     public Holiday addHoliday(int doctorId, LocalDate date, String reason) {
@@ -164,6 +208,13 @@ public class ClinicService {
         return new ArrayList<>();
     }
 
+    public int getDoctorAppointmentCount(Doctor doctor, LocalDate date) {
+        return (int) leads.stream()
+            .filter(lead -> lead.doctor.id == doctor.id && lead.state != BookingState.CANCELLED &&
+                           lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().equals(date))
+            .count();
+    }
+
     public List<Lead> getLeadsForClinic(int clinicId) {
         List<Lead> clinicLeads = new ArrayList<>();
         for (Lead l : leads) {
@@ -177,13 +228,15 @@ public class ClinicService {
     public boolean confirmBooking(int doctorId, String timeSlot, String patientName) {
         LocalDate bookingDate = LocalDate.now().plusDays(2);
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctorId && lead.date.equals(bookingDate) && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
+            if (lead.doctor.id == doctorId && lead.patient.name.equals(patientName) &&
+                lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().equals(bookingDate) &&
+                toTimeSlot(lead.appointmentUtc).equals(timeSlot)) {
                 if (lead.state == BookingState.PENDING) {
                     lead.state = BookingState.CONFIRMED;
 
                     // Dispatch confirmation job
                     String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
-                        patientName, lead.doctor.name, lead.date, timeSlot);
+                        patientName, lead.doctor.name, bookingDate, timeSlot);
                     dispatchJob("APPOINTMENT_CONFIRMED", payload);
 
                     return true;
@@ -196,13 +249,15 @@ public class ClinicService {
     public boolean cancelBooking(int doctorId, String timeSlot, String patientName) {
         LocalDate bookingDate = LocalDate.now().plusDays(2);
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctorId && lead.date.equals(bookingDate) && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
+            if (lead.doctor.id == doctorId && lead.patient.name.equals(patientName) &&
+                lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().equals(bookingDate) &&
+                toTimeSlot(lead.appointmentUtc).equals(timeSlot)) {
                 if (lead.state == BookingState.PENDING || lead.state == BookingState.CONFIRMED) {
                     lead.state = BookingState.CANCELLED;
 
                     // Dispatch cancellation job
                     String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
-                        patientName, lead.doctor.name, lead.date, timeSlot);
+                        patientName, lead.doctor.name, bookingDate, timeSlot);
                     dispatchJob("APPOINTMENT_CANCELLED", payload);
 
                     return true;
@@ -215,13 +270,15 @@ public class ClinicService {
     public boolean markNoShow(int doctorId, String timeSlot, String patientName) {
         LocalDate bookingDate = LocalDate.now().plusDays(2);
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctorId && lead.date.equals(bookingDate) && lead.timeSlot.equals(timeSlot) && lead.patientName.equals(patientName)) {
+            if (lead.doctor.id == doctorId && lead.patient.name.equals(patientName) &&
+                lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().equals(bookingDate) &&
+                toTimeSlot(lead.appointmentUtc).equals(timeSlot)) {
                 if (lead.state == BookingState.CONFIRMED) {
                     lead.state = BookingState.NO_SHOW;
 
                     // Dispatch no-show notification job
                     String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
-                        patientName, lead.doctor.name, lead.date, timeSlot);
+                        patientName, lead.doctor.name, bookingDate, timeSlot);
                     dispatchJob("APPOINTMENT_NO_SHOW", payload);
 
                     return true;
@@ -269,11 +326,15 @@ public class ClinicService {
             return;
         }
 
-        leads.add(new Lead(patientName, selectedDoctor, bookingDate, timeSlot, selectedDoctor.clinicId));
+        Patient patient = findOrCreatePatient(patientName, "unknown");
+        Instant appointmentUtc = toUtcInstant(bookingDate, timeSlot, ZoneId.systemDefault());
+        Lead lead = new Lead(leadIdCounter++, patient, selectedDoctor, appointmentUtc, 30, selectedDoctor.clinicId);
+        leads.add(lead);
+        patient.recordAppointment(lead.id);
 
         // Dispatch notification job
-        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
-            patientName, selectedDoctor.name, bookingDate, timeSlot);
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"appointmentUtc\":\"%s\"}",
+            patientName, selectedDoctor.name, appointmentUtc);
         dispatchJob("APPOINTMENT_BOOKED", payload);
     }
 
@@ -325,11 +386,15 @@ public class ClinicService {
 
         lastAssignedDoctorIndex.put(clinicId, selectedClinic.doctors.indexOf(assignedDoctor));
 
-        leads.add(new Lead(patientName, assignedDoctor, bookingDate, timeSlot, clinicId));
+        Patient patient = findOrCreatePatient(patientName, "unknown");
+        Instant appointmentUtc = toUtcInstant(bookingDate, timeSlot, ZoneId.systemDefault());
+        Lead lead = new Lead(leadIdCounter++, patient, assignedDoctor, appointmentUtc, 30, clinicId);
+        leads.add(lead);
+        patient.recordAppointment(lead.id);
 
         // Dispatch notification job
-        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\",\"clinic\":\"%s\"}",
-            patientName, assignedDoctor.name, bookingDate, timeSlot, selectedClinic.name);
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"appointmentUtc\":\"%s\",\"clinic\":\"%s\"}",
+            patientName, assignedDoctor.name, appointmentUtc, selectedClinic.name);
         dispatchJob("APPOINTMENT_BOOKED", payload);
     }
 
@@ -363,11 +428,15 @@ public class ClinicService {
 
         lastAssignedDoctorIndex.put(0, doctors.indexOf(assignedDoctor));
 
-        leads.add(new Lead(patientName, assignedDoctor, bookingDate, timeSlot, assignedDoctor.clinicId));
+        Patient patient = findOrCreatePatient(patientName, "unknown");
+        Instant appointmentUtc = toUtcInstant(bookingDate, timeSlot, ZoneId.systemDefault());
+        Lead lead = new Lead(leadIdCounter++, patient, assignedDoctor, appointmentUtc, 30, assignedDoctor.clinicId);
+        leads.add(lead);
+        patient.recordAppointment(lead.id);
 
         // Dispatch notification job
-        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"date\":\"%s\",\"time\":\"%s\"}",
-            patientName, assignedDoctor.name, bookingDate, timeSlot);
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"appointmentUtc\":\"%s\"}",
+            patientName, assignedDoctor.name, appointmentUtc);
         dispatchJob("APPOINTMENT_BOOKED", payload);
     }
 
@@ -392,7 +461,10 @@ public class ClinicService {
     private boolean isTimeSlotAvailable(Doctor doctor, LocalDate date, String timeSlot) {
         // Check if slot is already booked
         for (Lead lead : leads) {
-            if (lead.doctor.id == doctor.id && lead.date.equals(date) && lead.timeSlot.equals(timeSlot) && lead.state == BookingState.CONFIRMED) {
+            if (lead.doctor.id == doctor.id &&
+                lead.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate().equals(date) &&
+                toTimeSlot(lead.appointmentUtc).equals(timeSlot) &&
+                lead.state == BookingState.CONFIRMED) {
                 return false;
             }
         }
@@ -462,7 +534,7 @@ public class ClinicService {
             if (docLeads != null) {
                 System.out.println("\nDoctor: " + d.name);
                 for (Lead l : docLeads) {
-                    System.out.println("- " + l.patientName + " on " + l.date + " at " + l.timeSlot + " [" + l.state + "]");
+                    System.out.println("- " + l.patient.name + " on " + l.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate() + " at " + toTimeSlot(l.appointmentUtc) + " [" + l.state + "]");
                 }
             }
         }
@@ -496,11 +568,65 @@ public class ClinicService {
                     if (docLeads != null) {
                         System.out.println("  Doctor: " + d.name);
                         for (Lead l : docLeads) {
-                            System.out.println("- " + l.patientName + " on " + l.date + " at " + l.timeSlot + " [" + l.state + "]");
+                            System.out.println("- " + l.patient.name + " on " + l.appointmentUtc.atZone(ZoneId.systemDefault()).toLocalDate() + " at " + toTimeSlot(l.appointmentUtc) + " [" + l.state + "]");
                         }
                     }
                 }
             }
         }
+    }
+
+    public Lead bookAppointment(String patientName, String phoneNumber, int doctorId, LocalDate date, String timeSlot, ZoneId zone) {
+        if (!isValidTimeSlot(timeSlot)) {
+            throw new IllegalArgumentException("Invalid time slot! Please use HH:MM AM/PM format between 9:00 AM and 5:00 PM.");
+        }
+
+        Patient patient = findOrCreatePatient(patientName, phoneNumber);
+        Doctor doctor = doctors.stream().filter(d -> d.id == doctorId).findFirst().orElse(null);
+        if (doctor == null) {
+            throw new IllegalArgumentException("Doctor not found!");
+        }
+        if (!doctor.isAvailable) {
+            throw new IllegalArgumentException("Doctor is not available!");
+        }
+        if (!isTimeSlotAvailable(doctor, date, timeSlot)) {
+            throw new IllegalArgumentException("Time slot not available!");
+        }
+
+        Instant appointmentUtc = toUtcInstant(date, timeSlot, zone);
+        Lead lead = new Lead(leadIdCounter++, patient, doctor, appointmentUtc, 30, doctor.clinicId);
+        leads.add(lead);
+        patient.recordAppointment(lead.id);
+
+        // Dispatch notification job
+        String payload = String.format("{\"patient\":\"%s\",\"doctor\":\"%s\",\"appointmentUtc\":\"%s\"}",
+            patientName, doctor.name, appointmentUtc);
+        dispatchJob("APPOINTMENT_BOOKED", payload);
+
+        return lead;
+    }
+
+    // API support methods
+    public Clinic createClinic(String name) {
+        return addClinic(name);
+    }
+
+    public Doctor createDoctor(String name, String specialty, int priority, int clinicId) {
+        Doctor doctor = new Doctor(doctorIdCounter++, name, clinicId);
+        doctor.specialty = specialty;
+        doctor.priority = priority;
+        doctors.add(doctor);
+
+        for (Clinic c : clinics) {
+            if (c.id == clinicId) {
+                c.doctors.add(doctor);
+                break;
+            }
+        }
+        return doctor;
+    }
+
+    public List<Lead> getLeads() {
+        return new ArrayList<>(leads);
     }
 }

@@ -3,6 +3,8 @@ package model;
 public class Doctor {
     public int id;
     public String name;
+    public String specialty; // e.g., "Cardiology", "Dermatology", "General"
+    public int priority; // Higher number = higher priority (VIP doctors)
     public int clinicId;
     public boolean isAvailable;
     public String workingStartTime; // e.g., "09:00"
@@ -11,10 +13,34 @@ public class Doctor {
     public Doctor(int id, String name, int clinicId) {
         this.id = id;
         this.name = name;
+        this.specialty = "General"; // default specialty
+        this.priority = 1; // default priority
         this.clinicId = clinicId;
         this.isAvailable = true; // default available
         this.workingStartTime = "09:00"; // default 9 AM
         this.workingEndTime = "17:00";   // default 5 PM
+    }
+
+    public Doctor(int id, String name, String specialty, int clinicId) {
+        this.id = id;
+        this.name = name;
+        this.specialty = specialty;
+        this.priority = 1; // default priority
+        this.clinicId = clinicId;
+        this.isAvailable = true;
+        this.workingStartTime = "09:00";
+        this.workingEndTime = "17:00";
+    }
+
+    public Doctor(int id, String name, String specialty, int priority, int clinicId) {
+        this.id = id;
+        this.name = name;
+        this.specialty = specialty;
+        this.priority = priority;
+        this.clinicId = clinicId;
+        this.isAvailable = true;
+        this.workingStartTime = "09:00";
+        this.workingEndTime = "17:00";
     }
 
     public boolean isTimeWithinWorkingHours(String timeSlot) {

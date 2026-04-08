@@ -1,7 +1,7 @@
 package service;
 
+import java.util.*;
 import java.util.concurrent.*;
-import model.DispatchJob;
 import model.DispatchJob;
 
 public class DispatchQueue {
